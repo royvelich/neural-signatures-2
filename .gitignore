@@ -1,0 +1,11 @@
+*.ini
+/artifacts
+/outputs
+/wandb
+/lightning_logs
+__pycache__/
+/benchmarks
+/checkpoints
+/WANDB_CACHE_DIR
+/WANDB_DATA_DIR
+/WANDB_ARTIFACT_DIR
