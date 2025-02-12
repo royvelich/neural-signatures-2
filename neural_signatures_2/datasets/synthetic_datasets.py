@@ -100,14 +100,49 @@ class PolynomialSurfaceDataset(Dataset):
         ], dim=-2) / det.unsqueeze(-1).unsqueeze(-2)
         return shape_operator
 
+    # def _compute_principal_curvatures(
+    #         self,
+    #         shape_operator: torch.Tensor
+    # ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    #     """Compute principal curvatures and directions from the shape operator."""
+    #     eigenvalues, eigenvectors = torch.linalg.eig(shape_operator)
+    #     k1, k2 = eigenvalues.real[..., 0], eigenvalues.real[..., 1]
+    #     v1, v2 = eigenvectors.real[..., 0], eigenvectors.real[..., 1]
+    #     return k1, k2, v1, v2
+
     def _compute_principal_curvatures(
             self,
             shape_operator: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Compute principal curvatures and directions from the shape operator."""
+        """Compute principal curvatures and directions from the shape operator.
+        Returns principal curvatures (|k1| >= |k2|) and their corresponding directions."""
         eigenvalues, eigenvectors = torch.linalg.eig(shape_operator)
-        k1, k2 = eigenvalues.real[..., 0], eigenvalues.real[..., 1]
-        v1, v2 = eigenvectors.real[..., 0], eigenvectors.real[..., 1]
+        eigenvalues = eigenvalues.real
+        eigenvectors = eigenvectors.real
+
+        # Find indices where we need to swap to ensure descending order by absolute value
+        # swap_mask = torch.abs(eigenvalues[..., 0]) < torch.abs(eigenvalues[..., 1])
+        swap_mask = eigenvalues[..., 0] < eigenvalues[..., 1]
+
+        # Create sorted eigenvalues
+        k1 = torch.where(swap_mask, eigenvalues[..., 1], eigenvalues[..., 0])
+        k2 = torch.where(swap_mask, eigenvalues[..., 0], eigenvalues[..., 1])
+
+        # Apply same swapping to eigenvectors
+        v1 = torch.where(swap_mask[..., None],
+                         eigenvectors[..., 1],
+                         eigenvectors[..., 0])
+        v2 = torch.where(swap_mask[..., None],
+                         eigenvectors[..., 0],
+                         eigenvectors[..., 1])
+
+        # # Ensure positive x-axis projection for both principal directions
+        # flip_mask_v1 = v1[..., 0] < 0  # Check x-component
+        # flip_mask_v2 = v2[..., 0] < 0
+        #
+        # v1 = torch.where(flip_mask_v1[..., None], -v1, v1)
+        # v2 = torch.where(flip_mask_v2[..., None], -v2, v2)
+
         return k1, k2, v1, v2
 
     def _compute_curvatures(
@@ -167,15 +202,36 @@ class PolynomialSurfaceDataset(Dataset):
         x, y = torch.meshgrid(x_linspace, y_linspace, indexing='ij')
         return x.flatten(), y.flatten()
 
+    @staticmethod
+    def _normalize_vectors(vectors: torch.Tensor) -> torch.Tensor:
+        norms = torch.linalg.norm(vectors, axis=-1, keepdims=True)
+        return torch.where(norms > 0, vectors / norms, vectors)
+
+    @staticmethod
+    def _project_vectors(v1: torch.Tensor, v2: torch.Tensor) -> torch.Tensor:
+        return torch.abs(torch.sum(v1 * v2, dim=1))
+
     def get(self, idx):
         # Generate random parameters
         coeffs, order, coefficient_scale = self._generate_coeffs_and_order()
-        grid_radius = float(self._rng.uniform(low=self._grid_radius_range[0], high=self._grid_radius_range[1]))
-        points_scale = float(self._rng.uniform(low=self._points_scale_range[0], high=self._points_scale_range[1]))
-        grid_offset = float(self._rng.uniform(low=self._grid_offset_range[0], high=self._grid_offset_range[1]))
+
+        if len(self._grid_radius_range) == 2:
+            grid_radius = float(self._rng.uniform(low=self._grid_radius_range[0], high=self._grid_radius_range[1]))
+        else:
+            grid_radius = self._grid_radius_range[0]
+
+        if len(self._points_scale_range) == 2:
+            points_scale = float(self._rng.uniform(low=self._points_scale_range[0], high=self._points_scale_range[1]))
+        else:
+            points_scale = self._points_scale_range[0]
+
+        if len(self._grid_offset_range) == 2:
+            grid_offset = float(self._rng.uniform(low=self._grid_offset_range[0], high=self._grid_offset_range[1]))
+        else:
+            grid_offset = self._grid_offset_range[0]
 
         # Create base data object
-        data = Data(coeffs=coeffs, order=order, coefficient_scale=coefficient_scale, 
+        data = Data(coeffs=coeffs, order=order, coefficient_scale=coefficient_scale,
                    grid_radius=grid_radius, grid_offset=grid_offset, points_scale=points_scale)
 
         # Generate grid points
@@ -197,11 +253,24 @@ class PolynomialSurfaceDataset(Dataset):
                                                              v1=v1_2d, v2=v2_2d,
                                                              grad_H=grad_H_2d, grad_K=grad_K_2d)
 
+        v1_3d_normalized = PolynomialSurfaceDataset._normalize_vectors(v1_3d)
+        v2_3d_normalized = PolynomialSurfaceDataset._normalize_vectors(v2_3d)
+
+        H1 = PolynomialSurfaceDataset._project_vectors(v1=v1_3d_normalized, v2=grad_H_3d)
+        H2 = PolynomialSurfaceDataset._project_vectors(v1=v2_3d_normalized, v2=grad_H_3d)
+
+        K1 = PolynomialSurfaceDataset._project_vectors(v1=v1_3d_normalized, v2=grad_K_3d)
+        K2 = PolynomialSurfaceDataset._project_vectors(v1=v2_3d_normalized, v2=grad_K_3d)
+
         # Store computed quantities
         data.pos = torch.stack([x, y, z], dim=1) * data.points_scale
         data.face = torch.from_numpy(Delaunay(data.pos[:, :2].detach().numpy()).simplices.T)
         data.H = H
         data.K = K
+        data.H1 = H1
+        data.K1 = K1
+        data.H2 = H2
+        data.K2 = K2
         data.grad_H_2d = grad_H_2d
         data.grad_K_2d = grad_K_2d
         data.grad_H_3d = grad_H_3d

@@ -7,14 +7,6 @@ import pytorch_lightning as pl
 from torch_geometric.loader import DataLoader
 from torch_geometric.data import Dataset, Data
 
-# Local imports
-from neural_signatures.datasets.synthetic_datasets import SyntheticSurfaceDataset
-from neural_signatures.datasets.mesh_datasets import RemeshingDataset
-
-
-# neural signatures
-from neural_signatures.utils import utils
-
 
 @dataclass
 class DatasetSpecification:
